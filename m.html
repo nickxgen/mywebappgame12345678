@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3D Supercar - Highway</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      overflow: hidden;
+      background-color: #000;
+      font-family: 'Arial', sans-serif;
+    }
+    canvas { display: block; }
+    #hud {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      background: rgba(0, 0, 0, 0.8);
+      color: #fff;
+      padding: 15px 20px;
+      border-radius: 10px;
+      font-size: 15px;
+      z-index: 10;
+      border: 1px solid rgba(255,255,255,0.15);
+      pointer-events: none;
+      line-height: 1.5;
+    }
+    #hud span { color: #ffd700; font-weight: bold; }
+    #hud .gear-val { color: #00ff00; font-size: 20px; }
+    #hud .dipper-on { color: #00ffff; font-weight: bold; }
+    #hud .brake-on { color: #ff4444; font-weight: bold; }
+    #title {
+      position: absolute;
+      top: 15px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: #fff;
+      text-align: center;
+      z-index: 10;
+      pointer-events: none;
+    }
+    #title h1 {
+      font-size: 30px;
+      letter-spacing: 6px;
+      background: linear-gradient(90deg, #ff4444, #ff8800, #ffcc00);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    #controls {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 12px;
+      z-index: 10;
+    }
+    .btn {
+      padding: 10px 22px;
+      border: 1px solid rgba(255,255,255,0.3);
+      background: rgba(0,0,0,0.6);
+      color: #fff;
+      border-radius: 25px;
+      cursor: pointer;
+      font-size: 13px;
+      transition: all 0.3s;
+    }
+    .btn:hover { background: rgba(255,68,68,0.4); border-color: #ff4444; }
+    #instructions {
+      position: absolute;
+      bottom: 60px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: rgba(255,255,255,0.85);
+      font-size: 12px;
+      z-index: 10;
+      pointer-events: none;
+      text-align: center;
+    }
+
+    #webcam-container {
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      width: 20vw;
+      height: 15vw;
+      min-width: 240px;
+      min-height: 180px;
+      border: 2px solid #ff4444;
+      border-radius: 12px;
+      overflow: hidden;
+      z-index: 10;
+      background: rgba(0,0,0,0.6);
+      box-shadow: 0 0 15px rgba(255, 68, 68, 0.4);
+    }
+    #webcam {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+    }
+    #output_canvas {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+    }
+  </style>
+
+  <!-- Three.js Library -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <!-- MediaPipe Hand Tracking & Drawing Utils -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+  <div id="hud">
+    SCORE: <span id="scoreText">0</span><br>
+    SPEED: <span id="speedText">0 km/h</span><br>
+    GEAR: <span id="gearText" class="gear-val">1</span> / 5<br>
+    DIPPER: <span id="dipperText">OFF</span><br>
+    STEER: <span id="angleText">0°</span><br>
+    R-HAND: <span id="rightStateText">--</span><br>
+    L-HAND: <span id="leftStateText">--</span><br>
+    CAM MODE: <span id="camModeText">CHASE</span><br>
+    CAM STATUS: <span id="camStatus">Initializing...</span>
+  </div>
+  <div id="title"><h1>SUPERCAR HIGHWAY</h1></div>
+  <div id="instructions">
+    <b>[R]</b> Reset to Road | <b>[C]</b> Toggle Free Cam | <b>[1-5]</b> Manual Gears (Keyboard)<br>
+    Open BOTH hands to BRAKE | Close hands to ACCELERATE | 2 Fingers R-Hand for DIPPER
+  </div>
+
+  <div id="controls">
+    <button class="btn" id="lightsBtn">Toggle Lights</button>
+    <button class="btn" id="resetBtn">Reset to Road [R]</button>
+    <button class="btn" id="camBtn">Toggle Free Cam [C]</button>
+  </div>
+
+  <div id="webcam-container">
+    <video id="webcam" autoplay playsinline muted></video>
+    <canvas id="output_canvas"></canvas>
+  </div>
+
+<script>
+// ===== THREE.JS SETUP =====
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a2b3c);
+scene.fog = new THREE.FogExp2(0x1a2b3c, 0.005);
+
+const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 2000);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+document.body.appendChild(renderer.domElement);
+
+// ===== LIGHTING =====
+const ambientLight = new THREE.AmbientLight(0x557799, 0.6);
+scene.add(ambientLight);
+
+const dirLight = new THREE.DirectionalLight(0xfff5e6, 1.2);
+dirLight.position.set(50, 100, 50);
+dirLight.castShadow = true;
+scene.add(dirLight);
+
+// ===== MATERIALS =====
+const bodyMat = new THREE.MeshStandardMaterial({ color: 0xcc0000, metalness: 0.9, roughness: 0.1 });
+const darkMat = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.7, roughness: 0.3 });
+const glassMat = new THREE.MeshPhysicalMaterial({
+  color: 0x111111, metalness: 0.1, roughness: 0.0,
+  transmission: 0.6, transparent: true, opacity: 0.4
+});
+const headlightMat = new THREE.MeshStandardMaterial({
+  color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.8, metalness: 0.5, roughness: 0.2
+});
+const tireMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.9, metalness: 0.1 });
+const barrierMat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, metalness: 0.8, roughness: 0.3 });
+const barrierPostMat = new THREE.MeshStandardMaterial({ color: 0x555555, metalness: 0.5, roughness: 0.5 });
+const trunkMat = new THREE.MeshLambertMaterial({ color: 0x4a2e00 });
+const leavesMat = new THREE.MeshLambertMaterial({ color: 0x2e5a1c });
+
+// ===== BUILD SUPERCAR =====
+const car = new THREE.Group();
+
+const bodyLower = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.6, 4.5), bodyMat);
+bodyLower.position.y = 0.3; bodyLower.castShadow = true; car.add(bodyLower);
+
+const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.55, 2.2), bodyMat);
+cabin.position.set(0, 0.85, 0.2); cabin.castShadow = true; car.add(cabin);
+
+const windshield = new THREE.Mesh(new THREE.BoxGeometry(1.65, 0.5, 0.9), glassMat);
+windshield.position.set(0, 0.85, -0.85); windshield.rotation.x = 0.4; car.add(windshield);
+
+const fb = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.4, 0.4), darkMat);
+fb.position.set(0, 0.2, -2.3); fb.castShadow = true; car.add(fb);
+
+const rb = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.4, 0.35), darkMat);
+rb.position.set(0, 0.2, 2.3); rb.castShadow = true; car.add(rb);
+
+const hl1 = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.2, 0.15), headlightMat);
+hl1.position.set(0.7, 0.35, -2.3); car.add(hl1);
+const hl2 = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.2, 0.15), headlightMat);
+hl2.position.set(-0.7, 0.35, -2.3); car.add(hl2);
+
+const spotL = new THREE.SpotLight(0xffffcc, 2, 60, Math.PI / 6, 0.5);
+spotL.position.set(0.7, 0.35, -2.3);
+spotL.target.position.set(0.7, 0, -20);
+car.add(spotL); car.add(spotL.target);
+
+const spotR = new THREE.SpotLight(0xffffcc, 2, 60, Math.PI / 6, 0.5);
+spotR.position.set(-0.7, 0.35, -2.3);
+spotR.target.position.set(-0.7, 0, -20);
+car.add(spotR); car.add(spotR.target);
+
+// Wheels
+const wheels = [];
+const wheelPos = [
+  { x: 1.0, z: -1.5 }, { x: -1.0, z: -1.5 },
+  { x: 1.0, z: 1.5 }, { x: -1.0, z: 1.5 }
+];
+
+function createWheel() {
+  const wg = new THREE.Group();
+  const tire = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.38, 0.28, 24), tireMat);
+  tire.rotation.z = Math.PI / 2; tire.castShadow = true; wg.add(tire);
+  return wg;
+}
+
+wheelPos.forEach(pos => {
+  const wheel = createWheel();
+  wheel.position.set(pos.x, 0.3, pos.z);
+  wheels.push(wheel);
+  car.add(wheel);
+});
+
+car.position.set(0, 0, 0);
+scene.add(car);
+
+// ===== INFINITE HIGHWAY GENERATOR =====
+const ROAD_WIDTH = 16;
+const SEGMENT_LENGTH = 200;
+const TOTAL_SEGMENTS = 6;
+const roadSegments = [];
+
+const groundGeo = new THREE.PlaneGeometry(600, SEGMENT_LENGTH);
+const groundMat = new THREE.MeshLambertMaterial({ color: 0x2e7d32 });
+const roadGeo = new THREE.PlaneGeometry(ROAD_WIDTH, SEGMENT_LENGTH);
+const roadMat = new THREE.MeshLambertMaterial({ color: 0x252525 });
+const stripeGeo = new THREE.PlaneGeometry(0.3, 4);
+const stripeMat = new THREE.MeshBasicMaterial({ color: 0xffd700 });
+
+function createTree() {
+  const group = new THREE.Group();
+  
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.6, 3, 8), trunkMat);
+  trunk.position.y = 1.5;
+  trunk.castShadow = true;
+  group.add(trunk);
+
+  const foliage = new THREE.Mesh(new THREE.ConeGeometry(2.5, 6, 8), leavesMat);
+  foliage.position.y = 5;
+  foliage.castShadow = true;
+  group.add(foliage);
+
+  return group;
+}
+
+function createSideGuardrail() {
+  const group = new THREE.Group();
+  group.name = "GUARDRAILS";
+  const railGeo = new THREE.BoxGeometry(0.2, 0.5, SEGMENT_LENGTH);
+  
+  const leftRail = new THREE.Mesh(railGeo, barrierMat);
+  leftRail.position.set(-ROAD_WIDTH / 2 - 0.2, 0.6, 0);
+  group.add(leftRail);
+
+  const rightRail = new THREE.Mesh(railGeo, barrierMat);
+  rightRail.position.set(ROAD_WIDTH / 2 + 0.2, 0.6, 0);
+  group.add(rightRail);
+
+  const postGeo = new THREE.BoxGeometry(0.3, 1.0, 0.3);
+  for (let z = -SEGMENT_LENGTH / 2; z <= SEGMENT_LENGTH / 2; z += 10) {
+    const postL = new THREE.Mesh(postGeo, barrierPostMat);
+    postL.position.set(-ROAD_WIDTH / 2 - 0.2, 0.5, z);
+    group.add(postL);
+
+    const postR = new THREE.Mesh(postGeo, barrierPostMat);
+    postR.position.set(ROAD_WIDTH / 2 + 0.2, 0.5, z);
+    group.add(postR);
+  }
+
+  return group;
+}
+
+function populateSegmentTrees(treeContainer) {
+  const treeCount = 12;
+  for (let i = 0; i < treeCount; i++) {
+    const tree = createTree();
+    const side = Math.random() < 0.5 ? -1 : 1;
+    const x = side * (ROAD_WIDTH / 2 + 5 + Math.random() * 25);
+    const z = (Math.random() - 0.5) * SEGMENT_LENGTH;
+    tree.position.set(x, 0, z);
+    
+    const scale = 0.8 + Math.random() * 0.6;
+    tree.scale.set(scale, scale, scale);
+    treeContainer.add(tree);
+  }
+}
+
+function buildSegment(zPos) {
+  const group = new THREE.Group();
+  
+  const ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; group.add(ground);
+
+  const road = new THREE.Mesh(roadGeo, roadMat);
+  road.rotation.x = -Math.PI / 2; road.position.y = 0.01; group.add(road);
+
+  for (let z = -SEGMENT_LENGTH / 2; z < SEGMENT_LENGTH / 2; z += 10) {
+    const s = new THREE.Mesh(stripeGeo, stripeMat);
+    s.rotation.x = -Math.PI / 2; s.position.set(0, 0.03, z); group.add(s);
+  }
+
+  const guardrails = createSideGuardrail();
+  group.add(guardrails);
+
+  const treeGroup = new THREE.Group();
+  treeGroup.name = "TREE_GROUP";
+  populateSegmentTrees(treeGroup);
+  group.add(treeGroup);
+
+  group.position.z = zPos;
+  scene.add(group);
+  return group;
+}
+
+for (let i = 0; i < TOTAL_SEGMENTS; i++) {
+  const z = -i * SEGMENT_LENGTH + SEGMENT_LENGTH;
+  roadSegments.push(buildSegment(z));
+}
+
+// ===== TRANSMISSION & SPEED CONTROL =====
+const MAX_SPEED_KMH = 180; 
+const MAX_SPEED_UNITS = MAX_SPEED_KMH / 10; // 18.0 speed units
+
+// Precise shift ranges (in speed units)
+const upshiftLimits = { 1: 3.5, 2: 7.0, 3: 10.5, 4: 14.0 };
+const downshiftLimits = { 5: 12.0, 4: 8.5, 3: 5.5, 2: 2.5 };
+
+let rawScore = 0;
+let currentSpeed = 0.0;
+let targetSpeed = 0.0;
+let currentGear = 1;
+let isBraking = false;
+
+const REVERSE_LIMIT = -4.0;
+
+let carVelocityX = 0;
+let steerAngle = 0;
+
+// Camera Modes
+let freeCamMode = false;
+let freeCamPos = new THREE.Vector3(0, 10, 20);
+
+const keys = {};
+window.addEventListener('keydown', (e) => {
+  keys[e.code] = true;
+  if (e.code === 'KeyR') resetCarToRoad();
+  if (e.code === 'KeyC') toggleFreeCam();
+});
+window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+function resetCarToRoad() {
+  car.position.set(0, 0, car.position.z);
+  car.rotation.set(0, 0, 0);
+  carVelocityX = 0;
+  steerAngle = 0;
+  currentSpeed = 0.0;
+  targetSpeed = 0.0;
+  currentGear = 1;
+}
+
+function toggleFreeCam() {
+  freeCamMode = !freeCamMode;
+  document.getElementById('camModeText').innerText = freeCamMode ? "FREE CAM" : "CHASE";
+  document.getElementById('camModeText').style.color = freeCamMode ? "#00ffff" : "#ffd700";
+  if (freeCamMode) {
+    freeCamPos.copy(car.position).add(new THREE.Vector3(0, 5, 12));
+  }
+}
+
+document.getElementById('resetBtn').addEventListener('click', resetCarToRoad);
+document.getElementById('camBtn').addEventListener('click', toggleFreeCam);
+
+let lightsOn = true;
+document.getElementById('lightsBtn').addEventListener('click', () => {
+  lightsOn = !lightsOn;
+  spotL.visible = lightsOn;
+  spotR.visible = lightsOn;
+  document.getElementById('lightsBtn').textContent = lightsOn ? 'Lights Off' : 'Lights On';
+});
+
+// ===== WEBCAM & GESTURES =====
+let handSteerTarget = 0;
+let twoHandsPresent = false;
+
+let rightHandOpen = false;
+let leftHandOpen = false;
+let rightHandTwoFingers = false;
+
+const videoElement = document.getElementById('webcam');
+const canvasElement = document.getElementById('output_canvas');
+const canvasCtx = canvasElement.getContext('2d');
+const camStatusElement = document.getElementById('camStatus');
+
+function countExtendedFingers(landmarks) {
+  const wrist = landmarks[0];
+  const tips = [8, 12, 16, 20];
+  const bases = [5, 9, 13, 17];
+
+  let extended = 0;
+  for (let i = 0; i < tips.length; i++) {
+    const tipDist = Math.hypot(landmarks[tips[i]].x - wrist.x, landmarks[tips[i]].y - wrist.y);
+    const baseDist = Math.hypot(landmarks[bases[i]].x - wrist.x, landmarks[bases[i]].y - wrist.y);
+    if (tipDist > baseDist * 1.3) extended++;
+  }
+  return extended;
+}
+
+function drawSteeringWheel(ctx, x, y, radius, angle) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+
+  ctx.beginPath(); ctx.arc(0, 0, radius, 0, 2 * Math.PI);
+  ctx.lineWidth = 8; ctx.strokeStyle = '#ff4444'; ctx.stroke();
+
+  ctx.beginPath(); ctx.arc(0, 0, radius * 0.25, 0, 2 * Math.PI);
+  ctx.fillStyle = '#ffd700'; ctx.fill();
+
+  ctx.lineWidth = 4; ctx.strokeStyle = '#ffffff';
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-radius, 0); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(radius, 0); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, radius); ctx.stroke();
+
+  ctx.restore();
+}
+
+function onResults(results) {
+  canvasElement.width = videoElement.videoWidth || 320;
+  canvasElement.height = videoElement.videoHeight || 240;
+
+  canvasCtx.save();
+  canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+  const handsList = results.multiHandLandmarks;
+  const handednessList = results.multiHandedness;
+
+  let foundRight = false;
+  let foundLeft = false;
+
+  if (handsList && handsList.length === 2) {
+    twoHandsPresent = true;
+    camStatusElement.innerText = "Active (2 Hands)";
+    camStatusElement.style.color = "#00ff00";
+
+    for (let i = 0; i < handsList.length; i++) {
+      const landmarks = handsList[i];
+      const label = handednessList[i].label;
+
+      const isRightHand = label === "Left"; 
+      const isLeftHand = label === "Right";
+
+      const mirroredLandmarks = landmarks.map(lm => ({ x: 1.0 - lm.x, y: lm.y, z: lm.z }));
+      drawConnectors(canvasCtx, mirroredLandmarks, HAND_CONNECTIONS, { color: isRightHand ? '#00FFFF' : '#FF00FF', lineWidth: 2 });
+      drawLandmarks(canvasCtx, mirroredLandmarks, { color: '#FFFFFF', lineWidth: 1, radius: 3 });
+
+      const numFingers = countExtendedFingers(landmarks);
+      const isOpen = numFingers >= 3;
+
+      if (isRightHand) {
+        foundRight = true;
+        rightHandOpen = isOpen;
+        rightHandTwoFingers = (numFingers === 2);
+      } else if (isLeftHand) {
+        foundLeft = true;
+        leftHandOpen = isOpen;
+      }
+    }
+
+    // DUAL OPEN HANDS BRAKE LOGIC
+    if (foundRight && foundLeft && rightHandOpen && leftHandOpen) {
+      document.getElementById('rightStateText').innerText = "OPEN (Brake)";
+      document.getElementById('rightStateText').className = "brake-on";
+      document.getElementById('leftStateText').innerText = "OPEN (Brake)";
+      document.getElementById('leftStateText').className = "brake-on";
+      
+      targetSpeed = 0.0;
+      isBraking = true;
+    } else {
+      isBraking = false;
+      if (foundRight) {
+        if (rightHandTwoFingers) {
+          document.getElementById('rightStateText').innerText = "2 FINGERS (Dipper)";
+          document.getElementById('rightStateText').className = "dipper-on";
+        } else {
+          document.getElementById('rightStateText').innerText = rightHandOpen ? "OPEN" : "CLOSED (Accel)";
+          document.getElementById('rightStateText').className = rightHandOpen ? "brake-on" : "";
+        }
+      }
+      if (foundLeft) {
+        document.getElementById('leftStateText').innerText = leftHandOpen ? "OPEN" : "CLOSED";
+        document.getElementById('leftStateText').className = leftHandOpen ? "brake-on" : "";
+      }
+      
+      targetSpeed = MAX_SPEED_UNITS;
+    }
+
+    const sorted = [...handsList].sort((a, b) => a[0].x - b[0].x);
+    const rightWrist = sorted[0][0];
+    const leftWrist = sorted[1][0];
+
+    const centerX = (1.0 - (rightWrist.x + leftWrist.x) / 2) * canvasElement.width;
+    const centerY = ((rightWrist.y + leftWrist.y) / 2) * canvasElement.height;
+
+    const dx = leftWrist.x - rightWrist.x;
+    const dy = leftWrist.y - rightWrist.y;
+    const wheelAngleRadians = Math.atan2(-dy, dx);
+    
+    handSteerTarget = Math.max(-45, Math.min(45, (wheelAngleRadians * 180 / Math.PI) * 1.5));
+
+    drawSteeringWheel(canvasCtx, centerX, centerY, 45, wheelAngleRadians);
+
+  } else {
+    twoHandsPresent = false;
+    rightHandTwoFingers = false;
+    isBraking = false;
+    targetSpeed = 0.0;
+
+    if (handsList && handsList.length === 1) {
+      camStatusElement.innerText = "Need BOTH hands";
+      camStatusElement.style.color = "#ffaa00";
+    } else {
+      camStatusElement.innerText = "No Hands Detected";
+      camStatusElement.style.color = "#ff4444";
+    }
+    document.getElementById('rightStateText').innerText = "--";
+    document.getElementById('rightStateText').className = "";
+    document.getElementById('leftStateText').innerText = "--";
+    document.getElementById('leftStateText').className = "";
+  }
+
+  canvasCtx.restore();
+}
+
+const hands = new Hands({
+  locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+
+hands.setOptions({
+  maxNumHands: 2,
+  modelComplexity: 1,
+  minDetectionConfidence: 0.5,
+  minTrackingConfidence: 0.5
+});
+
+hands.onResults(onResults);
+
+const cameraUtils = new Camera(videoElement, {
+  onFrame: async () => { await hands.send({ image: videoElement }); },
+  width: 320,
+  height: 240
+});
+
+cameraUtils.start().catch(err => {
+  camStatusElement.innerText = "Camera Error";
+  camStatusElement.style.color = "#ff0000";
+});
+
+// ===== MAIN GAME LOOP =====
+function animate() {
+  requestAnimationFrame(animate);
+
+  // KEYBOARD OVERRIDE INPUTS
+  if (!twoHandsPresent) {
+    if (keys['KeyW'] || keys['ArrowUp']) targetSpeed = MAX_SPEED_UNITS;
+    else if (keys['KeyS'] || keys['ArrowDown']) targetSpeed = REVERSE_LIMIT;
+    else targetSpeed = 0.0;
+
+    if (keys['Digit1']) currentGear = 1;
+    if (keys['Digit2']) currentGear = 2;
+    if (keys['Digit3']) currentGear = 3;
+    if (keys['Digit4']) currentGear = 4;
+    if (keys['Digit5']) currentGear = 5;
+
+    rightHandTwoFingers = !!keys['KeyF'];
+  }
+
+  // GLOBAL DYNAMIC TRANSMISSION SHIFTING (Works in all camera/hand states)
+  if (currentSpeed > 0) {
+    // Automatic Upshift
+    if (currentGear === 1 && currentSpeed >= upshiftLimits[1]) currentGear = 2;
+    else if (currentGear === 2 && currentSpeed >= upshiftLimits[2]) currentGear = 3;
+    else if (currentGear === 3 && currentSpeed >= upshiftLimits[3]) currentGear = 4;
+    else if (currentGear === 4 && currentSpeed >= upshiftLimits[4]) currentGear = 5;
+
+    // Automatic Downshift
+    if (currentGear === 5 && currentSpeed < downshiftLimits[5]) currentGear = 4;
+    else if (currentGear === 4 && currentSpeed < downshiftLimits[4]) currentGear = 3;
+    else if (currentGear === 3 && currentSpeed < downshiftLimits[3]) currentGear = 2;
+    else if (currentGear === 2 && currentSpeed < downshiftLimits[2]) currentGear = 1;
+  } else {
+    currentGear = 1;
+  }
+
+  // Handle DIPPER
+  if (rightHandTwoFingers && lightsOn) {
+    spotL.intensity = 8.0;
+    spotR.intensity = 8.0;
+    spotL.distance = 120;
+    spotR.distance = 120;
+    spotL.angle = Math.PI / 4;
+    spotR.angle = Math.PI / 4;
+    headlightMat.emissiveIntensity = 2.5;
+    document.getElementById('dipperText').innerText = "HIGH BEAM (ON)";
+    document.getElementById('dipperText').className = "dipper-on";
+  } else {
+    spotL.intensity = lightsOn ? 2.0 : 0;
+    spotR.intensity = lightsOn ? 2.0 : 0;
+    spotL.distance = 60;
+    spotR.distance = 60;
+    spotL.angle = Math.PI / 6;
+    spotR.angle = Math.PI / 6;
+    headlightMat.emissiveIntensity = lightsOn ? 0.8 : 0;
+    document.getElementById('dipperText').innerText = "OFF";
+    document.getElementById('dipperText').className = "";
+  }
+
+  // Speed Dynamics
+  if (isBraking) {
+    if (currentSpeed > 0) {
+      currentSpeed -= 0.25;
+      if (currentSpeed < 0) currentSpeed = 0;
+    }
+  } else {
+    if (currentSpeed < targetSpeed) {
+      currentSpeed += 0.05;
+    } else if (currentSpeed > targetSpeed) {
+      currentSpeed -= 0.05;
+      if (Math.abs(currentSpeed) < 0.02) currentSpeed = 0;
+    }
+  }
+
+  let targetSteer = 0;
+  if (twoHandsPresent) {
+    targetSteer = handSteerTarget;
+  } else {
+    if (keys['ArrowLeft'] || keys['KeyA']) targetSteer = -45;
+    if (keys['ArrowRight'] || keys['KeyD']) targetSteer = 45;
+  }
+
+  steerAngle += (targetSteer - steerAngle) * 0.1;
+
+  const steerDir = currentSpeed < 0 ? -1 : 1;
+  const targetVelocityX = (steerAngle * 0.0025) * (Math.max(Math.abs(currentSpeed), 2) / 6) * steerDir;
+  carVelocityX += (targetVelocityX - carVelocityX) * 0.15;
+  car.position.x += carVelocityX;
+
+  const limit = (ROAD_WIDTH / 2) - 1.2;
+  if (car.position.x < -limit) { car.position.x = -limit; carVelocityX *= -0.3; }
+  if (car.position.x > limit) { car.position.x = limit; carVelocityX *= -0.3; }
+
+  car.rotation.y = -carVelocityX * 0.8;
+  car.rotation.z = carVelocityX * 0.2;
+
+  // Move Forward on Highway
+  car.position.z -= currentSpeed * 0.1;
+
+  // Highway Looping
+  roadSegments.forEach(seg => {
+    if (seg.position.z - car.position.z > SEGMENT_LENGTH * 2) {
+      seg.position.z -= SEGMENT_LENGTH * TOTAL_SEGMENTS;
+      
+      const treeGroup = seg.getObjectByName("TREE_GROUP");
+      if (treeGroup) {
+        while (treeGroup.children.length > 0) {
+          treeGroup.remove(treeGroup.children[0]);
+        }
+        populateSegmentTrees(treeGroup);
+      }
+    } else if (seg.position.z - car.position.z < -SEGMENT_LENGTH * (TOTAL_SEGMENTS - 2)) {
+      seg.position.z += SEGMENT_LENGTH * TOTAL_SEGMENTS;
+    }
+  });
+
+  wheels.forEach(w => { w.rotation.x += currentSpeed * 0.08; });
+
+  // Camera Placement
+  if (freeCamMode) {
+    if (keys['I']) freeCamPos.z -= 1.0;
+    if (keys['K']) freeCamPos.z += 1.0;
+    if (keys['J']) freeCamPos.x -= 1.0;
+    if (keys['L']) freeCamPos.x += 1.0;
+    if (keys['U']) freeCamPos.y += 1.0;
+    if (keys['O']) freeCamPos.y -= 1.0;
+
+    camera.position.copy(freeCamPos);
+    camera.lookAt(car.position.x, car.position.y + 1, car.position.z);
+  } else {
+    let camOffsetZ = currentSpeed < -0.2 ? -6.5 : 7.0;
+    let lookAtOffsetZ = currentSpeed < -0.2 ? 10.0 : -5.0;
+
+    camera.position.x = car.position.x * 0.5;
+    camera.position.y = 3.5;
+    camera.position.z = car.position.z + camOffsetZ;
+
+    camera.lookAt(car.position.x, 0.8, car.position.z + lookAtOffsetZ);
+  }
+
+  // HUD & Score Updates
+  if (currentSpeed > 0) {
+    rawScore += currentSpeed * 0.02;
+  }
+  document.getElementById('scoreText').innerText = Math.floor(rawScore);
+  
+  const displayKmH = Math.round(Math.abs(currentSpeed) * 10);
+  document.getElementById('speedText').innerText = currentSpeed < -0.2 ? `-${displayKmH} km/h (REV)` : `${displayKmH} km/h`;
+  document.getElementById('gearText').innerText = currentSpeed < -0.2 ? "R" : currentGear;
+  document.getElementById('angleText').innerText = `${Math.round(steerAngle)}°`;
+
+  renderer.render(scene, camera);
+}
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+animate();
+</script>
+</body>
+</html>

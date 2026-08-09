@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3D Supercar - Gesture Gears & Brakes</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      overflow: hidden;
+      background-color: #000;
+      font-family: 'Arial', sans-serif;
+    }
+    canvas { display: block; }
+    #hud {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      background: rgba(0, 0, 0, 0.75);
+      color: #fff;
+      padding: 15px 20px;
+      border-radius: 10px;
+      font-size: 16px;
+      z-index: 10;
+      border: 1px solid rgba(255,255,255,0.1);
+      pointer-events: none;
+      line-height: 1.5;
+    }
+    #hud span { color: #ffd700; font-weight: bold; }
+    #hud .gear-val { color: #00ff00; font-size: 20px; }
+    #title {
+      position: absolute;
+      top: 15px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: #fff;
+      text-align: center;
+      z-index: 10;
+      pointer-events: none;
+    }
+    #title h1 {
+      font-size: 32px;
+      letter-spacing: 6px;
+      background: linear-gradient(90deg, #ff4444, #ff8800, #ffcc00);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    #controls {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 12px;
+      z-index: 10;
+    }
+    .btn {
+      padding: 10px 22px;
+      border: 1px solid rgba(255,255,255,0.3);
+      background: rgba(0,0,0,0.6);
+      color: #fff;
+      border-radius: 25px;
+      cursor: pointer;
+      font-size: 13px;
+      transition: all 0.3s;
+    }
+    .btn:hover { background: rgba(255,68,68,0.4); border-color: #ff4444; }
+    #instructions {
+      position: absolute;
+      bottom: 60px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: rgba(255,255,255,0.8);
+      font-size: 13px;
+      z-index: 10;
+      pointer-events: none;
+      text-align: center;
+      background: rgba(0,0,0,0.5);
+      padding: 10px;
+      border-radius: 8px;
+    }
+    #webcam-container {
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      width: 20vw;
+      height: 15vw;
+      min-width: 240px;
+      min-height: 180px;
+      border: 2px solid #ff4444;
+      border-radius: 12px;
+      overflow: hidden;
+      z-index: 10;
+      background: rgba(0,0,0,0.6);
+      box-shadow: 0 0 15px rgba(255, 68, 68, 0.4);
+    }
+    #webcam {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+    }
+    #output_canvas {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+    }
+  </style>
+
+  <!-- Three.js Library -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <!-- MediaPipe Hand Tracking & Drawing Utils -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+  <div id="hud">
+    SCORE: <span id="scoreText">0</span><br>
+    SPEED: <span id="speedText">0 km/h</span><br>
+    GEAR: <span id="gearText" class="gear-val">1</span><br>
+    STEER: <span id="angleText">0°</span><br>
+    R-HAND: <span id="rightStateText">--</span><br>
+    L-HAND: <span id="leftStateText">--</span><br>
+    CAM STATUS: <span id="camStatus">Initializing...</span>
+  </div>
+  <div id="title"><h1>SUPERCAR</h1></div>
+  <div id="instructions">
+    Right Fist = Accelerate | Left Open Hand = Brake | Both Hands Open = Reverse (R)<br>
+    2 Fingers = Toggle Lights | Quick Open->Close (R/L) = Shift UP/DOWN
+  </div>
+
+  <div id="controls">
+    <button class="btn" id="doorBtn">Open Doors</button>
+    <button class="btn" id="lightsBtn">Toggle Lights</button>
+  </div>
+
+  <div id="webcam-container">
+    <video id="webcam" autoplay playsinline muted></video>
+    <canvas id="output_canvas"></canvas>
+  </div>
+
+<script>
+// ===== THREE.JS SETUP =====
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a2b3c);
+scene.fog = new THREE.FogExp2(0x1a2b3c, 0.008);
+
+const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 1000);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+document.body.appendChild(renderer.domElement);
+
+// ===== LIGHTING =====
+const ambientLight = new THREE.AmbientLight(0x446688, 0.5);
+scene.add(ambientLight);
+
+const dirLight = new THREE.DirectionalLight(0xfff5e6, 1.0);
+dirLight.position.set(30, 50, 20);
+dirLight.castShadow = true;
+scene.add(dirLight);
+
+// ===== MATERIALS =====
+const bodyMat = new THREE.MeshStandardMaterial({ color: 0xcc0000, metalness: 0.9, roughness: 0.1 });
+const darkMat = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.7, roughness: 0.3 });
+const glassMat = new THREE.MeshPhysicalMaterial({
+  color: 0x111111, metalness: 0.1, roughness: 0.0,
+  transmission: 0.6, transparent: true, opacity: 0.4
+});
+const headlightMat = new THREE.MeshStandardMaterial({
+  color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.8, metalness: 0.5, roughness: 0.2
+});
+const tireMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.9, metalness: 0.1 });
+
+// ===== BUILD SUPERCAR =====
+const car = new THREE.Group();
+
+const bodyLower = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.6, 4.5), bodyMat);
+bodyLower.position.y = 0.3; bodyLower.castShadow = true; car.add(bodyLower);
+
+const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.55, 2.2), bodyMat);
+cabin.position.set(0, 0.85, 0.2); cabin.castShadow = true; car.add(cabin);
+
+const windshield = new THREE.Mesh(new THREE.BoxGeometry(1.65, 0.5, 0.9), glassMat);
+windshield.position.set(0, 0.85, -0.85); windshield.rotation.x = 0.4; car.add(windshield);
+
+const fb = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.4, 0.4), darkMat);
+fb.position.set(0, 0.2, -2.3); fb.castShadow = true; car.add(fb);
+
+const rb = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.4, 0.35), darkMat);
+rb.position.set(0, 0.2, 2.3); rb.castShadow = true; car.add(rb);
+
+const hl1 = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.2, 0.15), headlightMat);
+hl1.position.set(0.7, 0.35, -2.3); car.add(hl1);
+const hl2 = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.2, 0.15), headlightMat);
+hl2.position.set(-0.7, 0.35, -2.3); car.add(hl2);
+
+const spotL = new THREE.SpotLight(0xffffcc, 2.5, 50, Math.PI / 5, 0.5);
+spotL.position.set(0.7, 0.35, -2.3);
+spotL.target.position.set(0.7, -0.5, -15);
+car.add(spotL); car.add(spotL.target);
+
+const spotR = new THREE.SpotLight(0xffffcc, 2.5, 50, Math.PI / 5, 0.5);
+spotR.position.set(-0.7, 0.35, -2.3);
+spotR.target.position.set(-0.7, -0.5, -15);
+car.add(spotR); car.add(spotR.target);
+
+// Wheels
+const wheels = [];
+const wheelPos = [
+  { x: 1.0, z: -1.5 }, { x: -1.0, z: -1.5 },
+  { x: 1.0, z: 1.5 }, { x: -1.0, z: 1.5 }
+];
+
+function createWheel() {
+  const wg = new THREE.Group();
+  const tire = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.38, 0.28, 24), tireMat);
+  tire.rotation.z = Math.PI / 2; tire.castShadow = true; wg.add(tire);
+  return wg;
+}
+
+wheelPos.forEach(pos => {
+  const wheel = createWheel();
+  wheel.position.set(pos.x, 0.3, pos.z);
+  wheels.push(wheel);
+  car.add(wheel);
+});
+
+// Doors
+let doorsOpen = false;
+let doorAngle = 0;
+const doorGroups = [];
+[1, -1].forEach(side => {
+  const dg = new THREE.Group();
+  const door = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.55, 1.2), bodyMat);
+  door.position.set(0, 0, 0); dg.add(door);
+  dg.position.set(side * 0.95, 0.6, 0.2);
+  car.add(dg);
+  doorGroups.push({ group: dg, side });
+});
+
+car.position.set(0, 0, 0);
+scene.add(car);
+
+// ===== WORLD ENVIRONMENT CONTAINER =====
+const ROAD_WIDTH = 14;
+const worldGroup = new THREE.Group();
+scene.add(worldGroup);
+
+const groundGeo = new THREE.PlaneGeometry(500, 500);
+const groundMat = new THREE.MeshLambertMaterial({ color: 0x2e7d32 });
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; worldGroup.add(ground);
+
+const roadGeo = new THREE.PlaneGeometry(ROAD_WIDTH, 500);
+const roadMat = new THREE.MeshLambertMaterial({ color: 0x333333 });
+const roadMesh = new THREE.Mesh(roadGeo, roadMat);
+roadMesh.rotation.x = -Math.PI / 2; roadMesh.position.y = 0.01; worldGroup.add(roadMesh);
+
+const stripeGroup = new THREE.Group();
+const stripeGeo = new THREE.PlaneGeometry(0.3, 3);
+const stripeMat = new THREE.MeshBasicMaterial({ color: 0xffd700 });
+for (let i = -250; i < 250; i += 8) {
+  const s = new THREE.Mesh(stripeGeo, stripeMat);
+  s.rotation.x = -Math.PI / 2; s.position.set(0, 0.03, i); stripeGroup.add(s);
+}
+worldGroup.add(stripeGroup);
+
+const dynamicObjects = [];
+
+function createTree(x, z) {
+  const group = new THREE.Group();
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.3, 2, 8), new THREE.MeshLambertMaterial({ color: 0x5c3317 }));
+  trunk.position.y = 1; group.add(trunk);
+  const cone = new THREE.Mesh(new THREE.ConeGeometry(1.5, 3, 8), new THREE.MeshLambertMaterial({ color: 0x228b22 }));
+  cone.position.y = 3.5; group.add(cone);
+  group.position.set(x, 0, z);
+  worldGroup.add(group);
+  dynamicObjects.push(group);
+}
+
+function createHouse(x, z, rotation) {
+  const group = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(4, 3, 3), new THREE.MeshLambertMaterial({ color: 0xf5deb3 }));
+  body.position.y = 1.5; group.add(body);
+  const roof = new THREE.Mesh(new THREE.ConeGeometry(3.2, 1.8, 4), new THREE.MeshLambertMaterial({ color: 0x8b0000 }));
+  roof.position.y = 3.9; roof.rotation.y = Math.PI / 4; group.add(roof);
+  group.position.set(x, 0, z);
+  group.rotation.y = rotation;
+  worldGroup.add(group);
+  dynamicObjects.push(group);
+}
+
+for (let z = -240; z < 240; z += 20) {
+  createTree(-(ROAD_WIDTH / 2 + 5), z);
+  createTree(ROAD_WIDTH / 2 + 5, z + 10);
+  if (z % 40 === 0) {
+    createHouse(-(ROAD_WIDTH / 2 + 10), z, Math.PI / 2);
+    createHouse(ROAD_WIDTH / 2 + 10, z + 20, -Math.PI / 2);
+  }
+}
+
+// ===== SIDE BARRICADES =====
+const barricades = [];
+const barMat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, metalness: 0.8, roughness: 0.3 });
+const barGeo = new THREE.BoxGeometry(0.5, 1, 9.8);
+for (let i = -240; i < 240; i += 10) {
+  const leftBar = new THREE.Mesh(barGeo, barMat);
+  leftBar.position.set(-ROAD_WIDTH / 2 - 0.5, 0.5, i);
+  worldGroup.add(leftBar);
+  barricades.push(leftBar);
+
+  const rightBar = new THREE.Mesh(barGeo, barMat);
+  rightBar.position.set(ROAD_WIDTH / 2 + 0.5, 0.5, i);
+  worldGroup.add(rightBar);
+  barricades.push(rightBar);
+}
+
+// ===== NPC CARS =====
+const npcCars = [];
+function createNPC(x, z) {
+  const group = new THREE.Group();
+  const color = new THREE.Color(Math.random(), Math.random(), Math.random());
+  const mat = new THREE.MeshStandardMaterial({ color: color, metalness: 0.6 });
+  
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.6, 4.2), mat);
+  body.position.y = 0.3;
+  const top = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.5, 2.0), mat);
+  top.position.set(0, 0.85, -0.2);
+  
+  group.add(body);
+  group.add(top);
+  group.position.set(x, 0, z);
+  group.active = true;
+  group.speed = 0.2 + Math.random() * 0.3; // NPC base driving speed
+  worldGroup.add(group);
+  return group;
+}
+
+for(let i = 0; i < 6; i++) {
+  npcCars.push(createNPC((Math.random() - 0.5) * (ROAD_WIDTH - 3), -100 - i * 70));
+}
+
+// ===== GAME STATE & INPUTS =====
+let score = 0;
+let currentSpeed = 0;
+let targetSpeed = 0;
+let currentGear = 1; // 1, 2, 3 or 'R'
+const gearLimits = { 1: 6, 2: 13, 3: 22, 'R': -8 }; 
+
+let carVelocityX = 0;
+let steerAngle = 0;
+
+let camZ = 7;
+let lookZ = -5;
+camera.position.set(0, 3.5, camZ);
+
+const keys = {};
+window.addEventListener('keydown', (e) => { keys[e.code] = true; });
+window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+document.getElementById('doorBtn').addEventListener('click', () => {
+  doorsOpen = !doorsOpen;
+  document.getElementById('doorBtn').textContent = doorsOpen ? 'Close Doors' : 'Open Doors';
+});
+
+let lightsOn = true;
+let lightsToggleCooldown = 0;
+function toggleLights() {
+  lightsOn = !lightsOn;
+  spotL.visible = lightsOn;
+  spotR.visible = lightsOn;
+  document.getElementById('lightsBtn').textContent = lightsOn ? 'Lights Off' : 'Lights On';
+}
+document.getElementById('lightsBtn').addEventListener('click', toggleLights);
+
+// ===== WEBCAM & MEDIAPIPE GESTURE ENGINE =====
+let handSteerTarget = 0;
+let handDetected = false;
+
+// Gesture state variables
+let rightHandOpen = false;
+let leftHandOpen = false;
+let lastRightHandOpen = false;
+let lastLeftHandOpen = false;
+
+let rightShiftCooldown = 0;
+let leftShiftCooldown = 0;
+
+const videoElement = document.getElementById('webcam');
+const canvasElement = document.getElementById('output_canvas');
+const canvasCtx = canvasElement.getContext('2d');
+const camStatusElement = document.getElementById('camStatus');
+
+function isHandOpen(landmarks) {
+  const wrist = landmarks[0];
+  const tips = [8, 12, 16, 20]; 
+  const bases = [5, 9, 13, 17]; 
+
+  let openFingers = 0;
+  for (let i = 0; i < tips.length; i++) {
+    const tipDist = Math.hypot(landmarks[tips[i]].x - wrist.x, landmarks[tips[i]].y - wrist.y);
+    const baseDist = Math.hypot(landmarks[bases[i]].x - wrist.x, landmarks[bases[i]].y - wrist.y);
+    if (tipDist > baseDist * 1.3) {
+      openFingers++;
+    }
+  }
+  return openFingers >= 3; 
+}
+
+function isTwoFingers(landmarks) {
+  const wrist = landmarks[0];
+  const tips = [8, 12, 16, 20];
+  const bases = [5, 9, 13, 17];
+  let openFingers = 0;
+  for (let i = 0; i < tips.length; i++) {
+    const tipDist = Math.hypot(landmarks[tips[i]].x - wrist.x, landmarks[tips[i]].y - wrist.y);
+    const baseDist = Math.hypot(landmarks[bases[i]].x - wrist.x, landmarks[bases[i]].y - wrist.y);
+    if (tipDist > baseDist * 1.3) {
+      openFingers++;
+    }
+  }
+  return openFingers === 2; // Exactly two fingers
+}
+
+function drawSteeringWheel(ctx, x, y, radius, angle) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+
+  ctx.beginPath(); ctx.arc(0, 0, radius, 0, 2 * Math.PI);
+  ctx.lineWidth = 8; ctx.strokeStyle = '#ff4444'; ctx.stroke();
+
+  ctx.beginPath(); ctx.arc(0, 0, radius * 0.25, 0, 2 * Math.PI);
+  ctx.fillStyle = '#ffd700'; ctx.fill();
+
+  ctx.lineWidth = 4; ctx.strokeStyle = '#ffffff';
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-radius, 0); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(radius, 0); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, radius); ctx.stroke();
+
+  ctx.restore();
+}
+
+function onResults(results) {
+  canvasElement.width = videoElement.videoWidth || 320;
+  canvasElement.height = videoElement.videoHeight || 240;
+
+  canvasCtx.save();
+  canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+  const handsList = results.multiHandLandmarks;
+  const handednessList = results.multiHandedness;
+
+  if (rightShiftCooldown > 0) rightShiftCooldown--;
+  if (leftShiftCooldown > 0) leftShiftCooldown--;
+  if (lightsToggleCooldown > 0) lightsToggleCooldown--;
+
+  let foundRight = false;
+  let foundLeft = false;
+  let twoFingersDetected = false;
+
+  if (handsList && handsList.length > 0) {
+    handDetected = true;
+    camStatusElement.innerText = `Active (${handsList.length} Hand${handsList.length > 1 ? 's' : ''})`;
+    camStatusElement.style.color = "#00ff00";
+
+    for (let i = 0; i < handsList.length; i++) {
+      const landmarks = handsList[i];
+      const label = handednessList[i].label; 
+      const isRightHand = label === "Left"; // Webcams are mirrored
+      const isLeftHand = label === "Right";
+
+      const mirroredLandmarks = landmarks.map(lm => ({ x: 1.0 - lm.x, y: lm.y, z: lm.z }));
+      drawConnectors(canvasCtx, mirroredLandmarks, HAND_CONNECTIONS, { color: isRightHand ? '#00FFFF' : '#FF00FF', lineWidth: 2 });
+      drawLandmarks(canvasCtx, mirroredLandmarks, { color: '#FFFFFF', lineWidth: 1, radius: 3 });
+
+      const isOpen = isHandOpen(landmarks);
+      if (isTwoFingers(landmarks)) twoFingersDetected = true;
+
+      if (isRightHand) {
+        foundRight = true;
+        rightHandOpen = isOpen;
+
+        // Gear Up
+        if (lastRightHandOpen && !rightHandOpen && rightShiftCooldown === 0 && currentGear !== 'R') {
+          if (currentGear < 3) { currentGear++; rightShiftCooldown = 15; }
+        }
+        lastRightHandOpen = rightHandOpen;
+        document.getElementById('rightStateText').innerText = rightHandOpen ? "OPEN" : "CLOSED (Acc)";
+        document.getElementById('rightStateText').style.color = rightHandOpen ? "#ff4444" : "#00ff00";
+
+      } else if (isLeftHand) {
+        foundLeft = true;
+        leftHandOpen = isOpen;
+
+        // Gear Down
+        if (lastLeftHandOpen && !leftHandOpen && leftShiftCooldown === 0 && currentGear !== 'R') {
+          if (currentGear > 1) { currentGear--; leftShiftCooldown = 15; }
+        }
+        lastLeftHandOpen = leftHandOpen;
+        document.getElementById('leftStateText').innerText = leftHandOpen ? "OPEN (Brake)" : "CLOSED";
+        document.getElementById('leftStateText').style.color = leftHandOpen ? "#ff4444" : "#00ff00";
+      }
+    }
+
+    // Two Fingers Gesture -> Headlights
+    if (twoFingersDetected && lightsToggleCooldown === 0) {
+      toggleLights();
+      lightsToggleCooldown = 30; // 30 frames cooldown
+    }
+
+    // Handle Speed/Gears/Brakes Based on Hand States
+    const reverseMode = (foundRight && rightHandOpen && foundLeft && leftHandOpen);
+
+    if (reverseMode) {
+      currentGear = 'R';
+      targetSpeed = gearLimits['R'];
+    } else {
+      if (currentGear === 'R') currentGear = 1; // Reset to 1 if stopping reverse mode
+      
+      if (foundLeft && leftHandOpen) {
+        targetSpeed = 0; // Left open = Brake
+      } else if (foundRight && !rightHandOpen) {
+        targetSpeed = gearLimits[currentGear]; // Right closed = Accelerate
+      } else {
+        targetSpeed = 2; // Coasting
+      }
+    }
+
+    // Steering Calculation
+    let centerX, centerY, wheelAngleRadians;
+    if (handsList.length >= 2) {
+      const sorted = [...handsList].sort((a, b) => a[0].x - b[0].x);
+      const rightWrist = sorted[0][0];
+      const leftWrist = sorted[1][0];
+
+      centerX = (1.0 - (rightWrist.x + leftWrist.x) / 2) * canvasElement.width;
+      centerY = ((rightWrist.y + leftWrist.y) / 2) * canvasElement.height;
+
+      const dx = leftWrist.x - rightWrist.x;
+      const dy = leftWrist.y - rightWrist.y;
+      wheelAngleRadians = Math.atan2(-dy, dx);
+      handSteerTarget = Math.max(-45, Math.min(45, (wheelAngleRadians * 180 / Math.PI) * 1.5));
+    } else {
+      const wrist = handsList[0][0];
+      centerX = (1.0 - wrist.x) * canvasElement.width;
+      centerY = wrist.y * canvasElement.height;
+
+      const rawOffset = wrist.x - 0.5;
+      handSteerTarget = Math.sign(rawOffset) * Math.pow(Math.abs(rawOffset), 0.8) * 250;
+      handSteerTarget = Math.max(-45, Math.min(45, handSteerTarget));
+      wheelAngleRadians = (handSteerTarget * Math.PI) / 180;
+    }
+
+    drawSteeringWheel(canvasCtx, centerX, centerY, 45, wheelAngleRadians);
+
+  } else {
+    handDetected = false;
+    camStatusElement.innerText = "No Hands Detected";
+    camStatusElement.style.color = "#ff4444";
+    document.getElementById('rightStateText').innerText = "--";
+    document.getElementById('leftStateText').innerText = "--";
+  }
+
+  canvasCtx.restore();
+}
+
+const hands = new Hands({
+  locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+
+hands.setOptions({
+  maxNumHands: 2,
+  modelComplexity: 1,
+  minDetectionConfidence: 0.5,
+  minTrackingConfidence: 0.5
+});
+
+hands.onResults(onResults);
+
+const cameraUtils = new Camera(videoElement, {
+  onFrame: async () => {
+    await hands.send({ image: videoElement });
+  },
+  width: 320,
+  height: 240
+});
+
+cameraUtils.start().catch(err => {
+  camStatusElement.innerText = "Camera Error";
+  camStatusElement.style.color = "#ff0000";
+});
+
+// ===== GAME LOOP =====
+function animate() {
+  requestAnimationFrame(animate);
+
+  // Keyboard Fallback
+  if (!handDetected) {
+    if (keys['KeyR']) {
+      currentGear = 'R';
+      targetSpeed = gearLimits['R'];
+    } else if (keys['KeyW'] || keys['ArrowUp']) {
+      if (currentGear === 'R') currentGear = 1;
+      targetSpeed = gearLimits[currentGear];
+    } else if (keys['KeyS'] || keys['ArrowDown']) {
+      targetSpeed = 0;
+    } else {
+      targetSpeed = 2; // Coast
+    }
+
+    // Manual Gear keys fallback
+    if (keys['Digit1']) currentGear = 1;
+    if (keys['Digit2']) currentGear = 2;
+    if (keys['Digit3']) currentGear = 3;
+  }
+
+  // Smooth acceleration and deceleration
+  if (currentSpeed < targetSpeed) currentSpeed += 0.15;
+  else if (currentSpeed > targetSpeed) currentSpeed -= 0.35; // Brakes hit harder
+
+  let targetSteer = 0;
+  if (handDetected) {
+    targetSteer = handSteerTarget;
+  } else {
+    if (keys['ArrowLeft'] || keys['KeyA']) targetSteer = -45;
+    if (keys['ArrowRight'] || keys['KeyD']) targetSteer = 45;
+  }
+  steerAngle += (targetSteer - steerAngle) * 0.1;
+
+  // X Velocity Logic - modified so steering right moves right whether forwarding or reversing
+  const targetVelocityX = (steerAngle * 0.003) * (Math.max(Math.abs(currentSpeed), 1) / 8);
+  carVelocityX += (targetVelocityX - carVelocityX) * 0.15;
+  car.position.x += carVelocityX;
+
+  const limit = (ROAD_WIDTH / 2) - 1.2;
+  if (car.position.x < -limit) { car.position.x = -limit; carVelocityX *= -0.3; }
+  if (car.position.x > limit) { car.position.x = limit; carVelocityX *= -0.3; }
+
+  car.rotation.y = -carVelocityX * 0.8;
+  car.rotation.z = carVelocityX * 0.2;
+
+  // Environment Movement
+  const moveDistance = currentSpeed * 0.1;
+  
+  // Trees and Houses
+  dynamicObjects.forEach(obj => {
+    obj.position.z += moveDistance;
+    if (obj.position.z > 50) obj.position.z -= 480;
+    else if (obj.position.z < -430) obj.position.z += 480; 
+  });
+
+  // Road Stripes
+  stripeGroup.children.forEach(stripe => {
+    stripe.position.z += moveDistance;
+    if (stripe.position.z > 250) stripe.position.z -= 500;
+    else if (stripe.position.z < -250) stripe.position.z += 500;
+  });
+
+  // Side Barricades
+  barricades.forEach(b => {
+    b.position.z += moveDistance;
+    if (b.position.z > 50) b.position.z -= 480;
+    else if (b.position.z < -430) b.position.z += 480;
+  });
+
+  // NPC Cars Processing
+  npcCars.forEach(npc => {
+    if (npc.active) {
+      // NPC drives forward (away from camera). World moves toward camera by moveDistance. 
+      // So NPC's z updates by moveDistance - NPC's own driving speed.
+      npc.position.z += moveDistance - npc.speed; 
+      
+      // Loop them properly
+      if (npc.position.z > 50) {
+        npc.position.z -= 480;
+        npc.position.x = (Math.random() - 0.5) * (ROAD_WIDTH - 3);
+        npc.active = true;
+        npc.visible = true;
+        npc.speed = 0.2 + Math.random() * 0.3; // Randomize speed for new cycle
+      } else if (npc.position.z < -450) {
+        npc.position.z += 480;
+      }
+
+      // Collision Detection
+      let zDist = Math.abs(npc.position.z - car.position.z);
+      let xDist = Math.abs(npc.position.x - car.position.x);
+      if (zDist < 2.5 && xDist < 1.8) {
+        npc.active = false;
+        npc.visible = false;
+        currentSpeed *= 0.2; // Drastically slow down on impact
+      }
+    }
+  });
+
+  // Wheel Spin
+  wheels.forEach(w => { w.rotation.x += currentSpeed * 0.08; });
+
+  // Doors Animation
+  const targetAngle = doorsOpen ? 0.8 : 0;
+  doorAngle += (targetAngle - doorAngle) * 0.1;
+  doorGroups.forEach(d => {
+    d.group.rotation.y = d.side * doorAngle;
+  });
+
+  // Dynamic Camera for Forward/Reverse
+  const targetCamZ = (currentGear === 'R') ? -7 : 7;
+  const targetLookZ = (currentGear === 'R') ? 15 : -5;
+  
+  camZ += (targetCamZ - camZ) * 0.05;
+  lookZ += (targetLookZ - lookZ) * 0.05;
+
+  camera.position.x = car.position.x * 0.5;
+  camera.position.z = camZ;
+  camera.lookAt(car.position.x, 0.8, lookZ);
+
+  // HUD Update
+  score += Math.floor(currentSpeed / 4);
+  if (score < 0) score = 0; // Prevent negative scores when reversing a lot
+  document.getElementById('scoreText').innerText = score;
+  document.getElementById('speedText').innerText = `${Math.round(Math.abs(currentSpeed) * 10)} km/h`;
+  document.getElementById('gearText').innerText = currentGear;
+  document.getElementById('gearText').style.color = currentGear === 'R' ? '#ff4444' : '#00ff00';
+  document.getElementById('angleText').innerText = `${Math.round(steerAngle)}°`;
+
+  renderer.render(scene, camera);
+}
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+animate();
+</script>
+</body>
+</html>
